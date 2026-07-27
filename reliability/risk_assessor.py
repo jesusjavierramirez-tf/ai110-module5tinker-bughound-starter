@@ -62,6 +62,14 @@ def assess_risk(
         score -= 5
         reasons.append("Bare except was modified, verify correctness.")
 
+    if "except" in fixed_code and "except" in original_code:
+        score -= 5
+        reasons.append("Exception handling changed, review carefully.")
+
+    if original_code.strip() == fixed_code.strip():
+        score = min(score, 20)
+        reasons.append("No substantive change was made.")
+
     # ----------------------------
     # Clamp score
     # ----------------------------

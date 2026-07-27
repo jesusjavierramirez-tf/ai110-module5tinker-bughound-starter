@@ -20,7 +20,8 @@ def test_low_risk_when_minimal_change_and_low_severity():
         fixed_code=fixed,
         issues=[{"type": "Code Quality", "severity": "Low", "msg": "minor"}],
     )
-    assert risk["level"] in ("low", "medium")  # depends on scoring rules
+    assert risk["level"] == "high"
+    assert risk["should_autofix"] is False
     assert 0 <= risk["score"] <= 100
 
 
@@ -46,3 +47,24 @@ def test_missing_return_is_penalized():
     )
     assert risk["score"] < 100
     assert any("Return" in r or "return" in r for r in risk["reasons"])
+
+
+def test_exception_handling_changes_add_caution():
+    original = "def f():\n    try:\n        return 1\n    except:\n        return 0\n"
+    fixed = "def f():\n    try:\n        return 1\n    except Exception as e:\n        return 0\n"
+    risk = assess_risk(
+        original_code=original,
+        fixed_code=fixed,
+        issues=[{"type": "Reliability", "severity": "High", "msg": "bare except"}],
+    )
+    assert any("Exception handling changed" in r for r in risk["reasons"])
+
+
+def test_unchanged_code_is_not_auto_fixable():
+    risk = assess_risk(
+        original_code="def add(a, b):\n    return a + b\n",
+        fixed_code="def add(a, b):\n    return a + b\n",
+        issues=[],
+    )
+    assert risk["should_autofix"] is False
+    assert any("No substantive change" in r for r in risk["reasons"])

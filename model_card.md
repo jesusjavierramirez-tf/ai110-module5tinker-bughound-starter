@@ -15,8 +15,15 @@ Fill this out after you run BugHound in **both** modes (Heuristic and Gemini).
 
 ## 2) How does it work?
 
-Describe the workflow in your own words (plan → analyze → act → test → reflect).  
-Include what is done by heuristics vs what is done by Gemini (if enabled).
+BugHound runs a simple agentic loop:
+
+1. Plan: the agent sets up a quick scan-and-fix workflow.
+2. Analyze: it looks for likely problems in the code. In heuristic mode, it uses built-in rules to detect patterns such as bare except blocks, print statements, and TODO comments. In Gemini mode, it sends the code to a Gemini model with a strict JSON-output prompt.
+3. Act: it proposes a rewrite of the code. If the analyzer found no issues, the agent leaves the code unchanged. If the model path is enabled but produces unusable output, the agent falls back to the heuristic fixer.
+4. Test: it runs a lightweight reliability assessment over the proposed change.
+5. Reflect: it decides whether the fix should be auto-applied or deferred for human review.
+
+The system uses heuristics by default when no LLM client is available or when the model output is malformed. Gemini is treated as an optional tool that can supplement or override the heuristic analyzer/fixer path.
 
 ---
 
@@ -24,69 +31,75 @@ Include what is done by heuristics vs what is done by Gemini (if enabled).
 
 **Inputs:**
 
-- What kind of code snippets did you try?
-- What was the “shape” of the input (short scripts, functions, try/except blocks, etc.)?
+- Tested sample snippets from the sample_code folder, including cleanish.py, mixed_issues.py, print_spam.py, and flaky_try_except.py.
+- The inputs were small Python functions and scripts, including print-based examples, TODO comments, and bare except blocks.
 
 **Outputs:**
 
-- What types of issues were detected?
-- What kinds of fixes were proposed?
-- What did the risk report show?
+- Detected issues included print-statement warnings, bare except handling, and TODO comments.
+- Proposed fixes ranged from replacing print() with logging.info() to changing bare except blocks to except Exception as e: and adding a comment or logging placeholder.
+- Risk reports varied from low-risk/no-action cases to high-risk cases where the system explicitly refused to auto-fix.
 
 ---
 
 ## 4) Reliability and safety rules
 
-List at least **two** reliability rules currently used in `assess_risk`. For each:
+Two important rules in assess_risk are:
 
-- What does the rule check?
-- Why might that check matter for safety or correctness?
-- What is a false positive this rule could cause?
-- What is a false negative this rule could miss?
+1. Return-statement change check
+   - What it checks: whether the fixed code still contains return statements when the original did.
+   - Why it matters: removing returns can silently change control flow and function behavior.
+   - False positive: a harmless refactor could be flagged even if it preserved behavior.
+   - False negative: a bug could still slip through if the function behavior changed in a less obvious way while still returning a value.
+
+2. Bare-except modification check
+   - What it checks: whether code that used a bare except block was changed.
+   - Why it matters: exception handling changes are safety-sensitive because they affect error semantics and control flow.
+   - False positive: a simple, behavior-preserving exception rewrite could be over-penalized even when it is still correct.
+   - False negative: a risky change to exception handling might still pass if it does not visibly alter the except syntax but changes behavior in other ways.
+
+A third rule added during this activity is the no-substantive-change guardrail:
+   - What it checks: whether the fixed code is identical to the original code.
+   - Why it matters: a no-op edit should not be treated as a safe auto-fix.
+   - False positive: a minimal but still useful comment or formatting change could be unnecessarily blocked.
+   - False negative: the system may still present an unchanged output as a valid suggestion if the change is semantically important but syntactically identical.
 
 ---
 
 ## 5) Observed failure modes
 
-Provide at least **two** examples:
+1. Model output format mismatch
+   - Example: the analyzer sometimes returned a payload that was not parseable JSON, or returned a single object instead of the expected array.
+   - What went wrong: the agent had to fall back to heuristics instead of trusting the model result, which reduced the benefit of using Gemini for analysis.
 
-1. A time BugHound missed an issue it should have caught  
-2. A time BugHound suggested a fix that felt risky, wrong, or unnecessary  
+2. Risky or unnecessary fix suggestion
+   - Example: in the mixed_issues sample, the agent proposed a rewrite that touched exception handling and changed the code more aggressively than expected.
+   - What went wrong: the fix felt more invasive than the stated issues warranted, and the risk layer correctly rejected it for auto-fix.
 
-For each, include the snippet (or describe it) and what went wrong.
+3. No-op overconfidence
+   - Example: a clean sample such as cleanish.py could otherwise be treated as a safe auto-fix case even when no substantive change was made.
+   - What went wrong: the system now guards against this by treating unchanged output as high-risk and blocking auto-fix.
 
 ---
 
 ## 6) Heuristic vs Gemini comparison
 
-Compare behavior across the two modes:
+Heuristic mode was consistent and predictable. It reliably detected the obvious patterns in the sample files, especially print statements and bare except blocks. It also worked fully offline and did not depend on API quota.
 
-- What did Gemini detect that heuristics did not?
-- What did heuristics catch consistently?
-- How did the proposed fixes differ?
-- Did the risk scorer agree with your intuition?
+Gemini mode was more flexible in language and could sometimes produce more nuanced explanations or rewrites, but it was also less deterministic. In the tested runs, the model output was not always in the exact structure the agent expected, which made format handling and fallback behavior important. The risk scorer often agreed with the intuition that exception-handling changes should be treated cautiously, even when the model suggested a rewrite.
+
+In short: heuristics are good for stable, simple patterns; Gemini can add richer interpretation, but its output must be treated as draft material rather than guaranteed machine-readable instructions.
 
 ---
 
 ## 7) Human-in-the-loop decision
 
-Describe one scenario where BugHound should **refuse** to auto-fix and require human review.
+BugHound should refuse to auto-fix when the proposed change touches exception handling or when the change is effectively a no-op. A specific trigger would be: if the code includes exception-handling logic and the rewritten code changes that structure, or if the original and fixed code are identical.
 
-- What trigger would you add?
-- Where would you implement it (risk_assessor vs agent workflow vs UI)?
-- What message should the tool show the user?
+This guardrail belongs in the risk assessment logic, because that layer already decides whether a fix is safe enough for auto-application. The UI should display a message such as: “This change affects error-handling behavior or makes no substantive change. Human review is recommended before applying it.”
 
 ---
 
 ## 8) Improvement idea
 
-Propose one improvement that would make BugHound more reliable *without* making it dramatically more complex.
-
-Examples:
-
-- A better output format and parsing strategy
-- A new guardrail rule + test
-- A more careful “minimal diff” policy
-- Better detection of changes that alter behavior
-
-Write your idea clearly and briefly.
+A low-complexity improvement would be to add a small “minimal diff” guardrail that checks whether a proposed fix changes more than the relevant issue. For example, if the agent is only addressing a print-statement issue but the patch also rewrites the function signature, changes return values, or reworks exception behavior, the system should downgrade confidence and require human review. This would make the agent less likely to over-edit code while keeping the overall workflow simple.

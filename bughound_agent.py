@@ -178,12 +178,16 @@ class BugHoundAgent:
         parsed = self._try_json_loads(text)
         if isinstance(parsed, list):
             return self._normalize_issues(parsed)
+        if isinstance(parsed, dict):
+            return self._normalize_issues([parsed])
 
         array_str = self._extract_first_json_array(text)
         if array_str:
             parsed2 = self._try_json_loads(array_str)
             if isinstance(parsed2, list):
                 return self._normalize_issues(parsed2)
+            if isinstance(parsed2, dict):
+                return self._normalize_issues([parsed2])
 
         return None
 
